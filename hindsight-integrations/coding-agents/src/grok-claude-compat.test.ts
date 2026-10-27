@@ -8,10 +8,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RawConfig } from "./core/config";
 import { runHook } from "./core/hook";
 import { runRetainHook } from "./core/retain-hook";
 import { runSessionStartHook } from "./core/session-start";
-import type { RawConfig } from "./core/config";
 import { HOOK_HARNESSES } from "./harness/hook-lifecycle";
 
 let stdin = "";
@@ -137,21 +137,36 @@ describe("Grok Build context delivery", () => {
   const grok = HOOK_HARNESSES["grok-build"];
   const toolUse = () => grokEvent("post_tool_use", "PostToolUse", { toolName: "read_file" });
 
-  it("delivers SessionStart and prompt context once, on the next PostToolUse", async () => {
+  const GUIDE = "<hindsight_knowledge>";
+  const REFRESH = "<hindsight_knowledge_refresh>";
+  const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+
+  const startSession = async (source = "new") => {
     vi.stubEnv("GROK_HOOK_EVENT", "session_start");
-    stdin = grokEvent("session_start", "SessionStart", { source: "new" });
-    const started = await captured(() =>
+    stdin = grokEvent("session_start", "SessionStart", { source });
+    return captured(() =>
       runSessionStartHook(grok.sessionStart, () => ({
         listPages: async () => ({ items: [] }),
         listDocumentIds: async () => new Set<string>(),
       }))
     );
-    expect(started).not.toContain("additionalContext");
-
+  };
+  const submitPrompt = async (prompt = "which parser?") => {
     vi.stubEnv("GROK_HOOK_EVENT", "user_prompt_submit");
-    stdin = grokEvent("user_prompt_submit", "UserPromptSubmit", { prompt: "which parser?" });
-    const prompted = await captured(() => runHook(grok.prompt, promptClient() as never));
-    expect(prompted).not.toContain("additionalContext");
+    stdin = grokEvent("user_prompt_submit", "UserPromptSubmit", { prompt });
+    return captured(() => runHook(grok.prompt, promptClient() as never));
+  };
+  /** What the model receives from the next tool hook ("" when nothing is pending). */
+  const useTool = async (): Promise<string> => {
+    vi.stubEnv("GROK_HOOK_EVENT", "post_tool_use");
+    stdin = toolUse();
+    const out = await captured(() => runHook(grok.prompt, promptClient() as never));
+    return out ? JSON.parse(out).hookSpecificOutput.additionalContext : "";
+  };
+
+  it("delivers the SessionStart guide once, on the next PostToolUse, without a duplicate refresh", async () => {
+    expect(await startSession()).not.toContain("additionalContext");
+    expect(await submitPrompt()).not.toContain("additionalContext");
 
     vi.stubEnv("GROK_HOOK_EVENT", "post_tool_use");
     stdin = toolUse();
@@ -160,15 +175,55 @@ describe("Grok Build context delivery", () => {
     );
     expect(delivered.hookSpecificOutput.hookEventName).toBe("PostToolUse");
     const context: string = delivered.hookSpecificOutput.additionalContext;
-    // Both stashed blocks arrive: the session preamble and the prompt's roster refresh.
-    expect(context).toContain("<hindsight_knowledge>");
-    expect(context).toContain("<hindsight_knowledge_refresh>");
+    // The full guide already carries the tool guide and page roster: the first prompt's refresh
+    // would only repeat it in the same delivery.
+    expect(count(context, GUIDE)).toBe(1);
+    expect(count(context, REFRESH)).toBe(0);
 
     // Delivered once: the next tool call has nothing to hand over, and never builds a client.
     stdin = toolUse();
     const makeClient = promptClient();
     expect(await captured(() => runHook(grok.prompt, makeClient as never))).toBe("");
     expect(makeClient).not.toHaveBeenCalled();
+  });
+
+  it("still delivers the scheduled refresh on a later prompt, once the guide has been delivered", async () => {
+    await startSession();
+    await submitPrompt();
+    expect(count(await useTool(), GUIDE)).toBe(1);
+
+    await submitPrompt("and the lexer?");
+    const later = await useTool();
+    expect(count(later, REFRESH)).toBe(1);
+    expect(count(later, GUIDE)).toBe(0);
+  });
+
+  it("holds back every refresh while the guide is still waiting for a tool hook", async () => {
+    await startSession();
+    await submitPrompt();
+    await submitPrompt("and the lexer?");
+    const context = await useTool();
+    expect(count(context, GUIDE)).toBe(1);
+    expect(count(context, REFRESH)).toBe(0);
+  });
+
+  it("keeps the refresh when SessionStart never ran for the session", async () => {
+    await submitPrompt();
+    const context = await useTool();
+    expect(count(context, REFRESH)).toBe(1);
+    expect(count(context, GUIDE)).toBe(0);
+  });
+
+  it("re-delivers the guide, still once, when the host starts the session again after a reset", async () => {
+    await startSession();
+    await submitPrompt();
+    await useTool();
+
+    await startSession("compact");
+    await submitPrompt("and the lexer?");
+    const context = await useTool();
+    expect(count(context, GUIDE)).toBe(1);
+    expect(count(context, REFRESH)).toBe(0);
   });
 
   it("installs the prompt entry on PostToolUse; other hosts still emit on the prompt", async () => {

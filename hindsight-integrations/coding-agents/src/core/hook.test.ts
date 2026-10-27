@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config";
-import { buildHookOutput, runHook } from "./hook";
 import { diagFilePath } from "./diag";
 import { ReflectError } from "./hindsight";
+import { buildHookOutput, runHook } from "./hook";
 import { buildReflectQuery } from "./inject";
 
 let root: string;
@@ -102,6 +102,20 @@ describe("buildHookOutput", () => {
     expect(t1.context).toContain("REFLECT_ANSWER");
     expect(t2.context ?? "").not.toContain("REFLECT_ANSWER");
     expect(JSON.parse(readFileSync(cacheFile, "utf8")).turns).toBe(2);
+  });
+
+  it("skips the roster refresh while the SessionStart guide is pending, then resumes the cadence", async () => {
+    const cfg = resolveConfig({});
+    const client = makeClient();
+    const args = { harness: "claude-code", prompt: UNRELATED_PROMPT, cfg, client, cacheFile };
+
+    const guarded = await buildHookOutput({ ...args, knowledgeGuidePending: true });
+    expect(guarded.context ?? "").not.toContain("<hindsight_knowledge_refresh>");
+    // The reflect answer is not part of the guide: it is still delivered on the first turn.
+    expect(guarded.context).toContain("REFLECT_ANSWER");
+
+    const next = await buildHookOutput({ ...args, knowledgeGuidePending: false });
+    expect(next.context).toContain("<hindsight_knowledge_refresh>");
   });
 
   it("defers the first automatic reflect for a new bank, then reflects on prompt two", async () => {

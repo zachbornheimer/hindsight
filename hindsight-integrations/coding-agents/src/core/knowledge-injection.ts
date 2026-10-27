@@ -132,6 +132,14 @@ export function buildKnowledgePreamble(pages: PageRef[], opts?: ToolGuideOpts): 
   );
 }
 
+/** True when `text` already carries a SessionStart guide (`buildKnowledgePreamble`). The guide
+ *  holds the tool guide and the page roster, so a `buildRosterRefresh` delivered beside it would
+ *  say the same thing twice. The tag must stand alone on its line: a refresh's opening tag
+ *  (`<hindsight_knowledge_refresh>`) and prose that merely quotes the tag do not match. */
+export function containsKnowledgeGuide(text: string): boolean {
+  return /^<hindsight_knowledge>$/m.test(text);
+}
+
 /**
  * Periodic UserPromptSubmit refresh. ALWAYS emits (never undefined) so the full tool guide keeps
  * re-appearing in context even on a fresh repo with no pages yet — precisely when the agent is

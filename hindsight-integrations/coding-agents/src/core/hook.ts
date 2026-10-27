@@ -23,14 +23,12 @@
  */
 import { existsSync } from "node:fs";
 import { deriveBankIdOrSkip } from "./bank";
+import { brandWord } from "./brand";
 import type { Config } from "./config";
 import { applyBankConfig, loadConfig } from "./config";
 import { diag, diagFilePath, readHookEvent } from "./diag";
-import { describeError, log, setLogLevel } from "./log";
-import { startBackgroundSeed } from "./seed";
 import type { ClientOpts } from "./hindsight";
 import { HindsightClient, ReflectError } from "./hindsight";
-import { brandWord } from "./brand";
 import {
   buildReflectQuery,
   buildSystemInjection,
@@ -40,15 +38,18 @@ import {
   RECALL_INJECT_LEAD,
 } from "./inject";
 import type { PageRef } from "./knowledge-injection";
-import { buildRosterRefresh, parsePageList } from "./knowledge-injection";
+import { buildRosterRefresh, containsKnowledgeGuide, parsePageList } from "./knowledge-injection";
+import { describeError, log, setLogLevel } from "./log";
+import { startBackgroundSeed } from "./seed";
 import {
+  peekPendingContext,
   readSessionCache,
+  type SessionCache,
   sessionCacheFile,
   sessionRootDir,
   stashPendingContext,
   takePendingContext,
   writeSessionCache,
-  type SessionCache,
 } from "./session-cache";
 import { appendJournalTurn, journalPath } from "./turn-journal";
 
@@ -235,6 +236,10 @@ export async function buildHookOutput(args: {
   cfg: Config;
   client: HookClient;
   cacheFile: string;
+  /** The SessionStart guide is still waiting to be delivered: it already carries the tool guide
+   *  and page roster, so this turn adds no roster refresh beside it. The turn still counts toward
+   *  the cadence, so the next scheduled refresh is not shifted. */
+  knowledgeGuidePending?: boolean;
 }): Promise<HookOutput> {
   const { harness, prompt, cfg, client, cacheFile } = args;
 
@@ -384,7 +389,7 @@ export async function buildHookOutput(args: {
   // hindsight_search_knowledge_pages when a question warrants it — an unprompted injection on
   // every turn (even a plain "yes") read as phantom research. The roster below keeps the tool
   // and the page names in front of the agent.
-  if (cadence > 0 && turns % cadence === 0) {
+  if (cadence > 0 && turns % cadence === 0 && !args.knowledgeGuidePending) {
     blocks.push(
       buildRosterRefresh(pages, {
         reflectOnNewGoals: cfg.autoInject !== "reflect",
@@ -494,7 +499,19 @@ export async function runHook(
     startBackgroundSeed(cwd, { limit: cfg.seedLimit, harness: spec.harness });
   }
 
-  const output = await buildHookOutput({ harness: spec.harness, prompt, cfg, client, cacheFile });
+  // A host that only hands the model TOOL-hook context (Grok Build) holds SessionStart's full
+  // guide until the first tool call, so the prompt's roster refresh would land in the same
+  // delivery and repeat it. Once the guide is delivered the cadence resumes untouched.
+  const pending =
+    spec.toolHook && sessionId ? peekPendingContext(spec.harness, sessionId) : undefined;
+  const output = await buildHookOutput({
+    harness: spec.harness,
+    prompt,
+    cfg,
+    client,
+    cacheFile,
+    knowledgeGuidePending: pending !== undefined && containsKnowledgeGuide(pending),
+  });
   // Mid-session heal: a bank with ZERO pages means the engine never built it (e.g. the session
   // predates the install, so no SessionStart and the first-prompt net already passed). Fire the
   // idempotent engine — the per-bank lock makes repeats free while it builds.

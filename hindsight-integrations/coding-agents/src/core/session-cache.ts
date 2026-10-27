@@ -90,6 +90,16 @@ export function stashPendingContext(harness: string, sessionId: string, context:
   }
 }
 
+/** The session's pending context without claiming it, so a prompt hook can see what a tool hook
+ *  is still going to deliver before it decides what else to stash. */
+export function peekPendingContext(harness: string, sessionId: string): string | undefined {
+  try {
+    return readFileSync(pendingContextFile(harness, sessionId), "utf8") || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Claim and clear the session's pending context. The rename is the claim: tool hooks can run in
  *  parallel, and only the one whose rename succeeds delivers the block. */
 export function takePendingContext(harness: string, sessionId: string): string | undefined {

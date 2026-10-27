@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parsePageList, buildKnowledgePreamble, buildRosterRefresh } from "./knowledge-injection";
+import {
+  buildKnowledgePreamble,
+  buildRosterRefresh,
+  containsKnowledgeGuide,
+  parsePageList,
+} from "./knowledge-injection";
 
 describe("parsePageList", () => {
   it("extracts {id,title} from the page list shape, tolerating junk", () => {
@@ -122,5 +127,21 @@ describe("toolGuideExtra (#4791)", () => {
 
   it("adds nothing when unset or blank", () => {
     expect(buildKnowledgePreamble(pages, { extra: "  " })).toBe(buildKnowledgePreamble(pages));
+  });
+});
+
+describe("containsKnowledgeGuide", () => {
+  const pages = [{ id: "p1", title: "Component map" }];
+
+  it("recognises the SessionStart guide, alone or beside other blocks", () => {
+    const guide = buildKnowledgePreamble(pages);
+    expect(containsKnowledgeGuide(guide)).toBe(true);
+    expect(containsKnowledgeGuide(`${buildRosterRefresh(pages)}\n\n${guide}`)).toBe(true);
+  });
+
+  it("does not mistake a roster refresh, or prose quoting the tag, for the guide", () => {
+    expect(containsKnowledgeGuide(buildRosterRefresh(pages))).toBe(false);
+    expect(containsKnowledgeGuide("the <hindsight_knowledge> block lists tools")).toBe(false);
+    expect(containsKnowledgeGuide("")).toBe(false);
   });
 });
